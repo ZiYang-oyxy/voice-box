@@ -14,6 +14,7 @@ import {
   DoubaoRealtimeClient,
   type DoubaoSessionConfig
 } from "../services/doubaoRealtimeClient.js";
+import { config } from "../services/openaiClient.js";
 
 type RealtimeRoutesOptions = {
   store: SessionStore;
@@ -137,7 +138,8 @@ export const realtimeRoutes: FastifyPluginAsync<RealtimeRoutesOptions> = async (
       await ensureUpstream(session, options.store);
       sendToClient(session, {
         type: "server.ready",
-        sessionId
+        sessionId,
+        outputAudioFormat: config.doubaoOutputAudioFormat
       });
     } catch (error) {
       sendToClient(session, {
@@ -151,7 +153,14 @@ export const realtimeRoutes: FastifyPluginAsync<RealtimeRoutesOptions> = async (
     }
 
     socket.on("message", (rawData: RawData) => {
-      void handleClientMessage(rawData, session, sessions, options.store);
+      void handleClientMessage(rawData, session, sessions, options.store).catch(async (error) => {
+        request.log.error({ err: error }, "failed to handle realtime client message");
+        sendToClient(session, {
+          type: "server.error",
+          error: "client_message_failed",
+          message: error instanceof Error ? error.message : String(error)
+        });
+      });
     });
 
     socket.on("close", () => {
@@ -272,9 +281,18 @@ async function handleClientMessage(
       }
       return;
     case "client.audio.append":
-      await session.upstream?.sendAudioChunk(Buffer.from(parsed.data.audio, "base64"));
+      {
+        const audioBuffer = Buffer.from(parsed.data.audio, "base64");
+        await session.upstream?.sendAudioChunk(audioBuffer);
+        await store.appendEvent(session.id, "input_audio_chunk", {
+          bytes: audioBuffer.length
+        });
+      }
       return;
     case "client.audio.commit":
+      for (let i = 0; i < 12; i += 1) {
+        await session.upstream?.sendAudioChunk(Buffer.alloc(3200));
+      }
       await store.appendEvent(session.id, "input_audio_committed", {});
       return;
     case "client.chat.text":
@@ -325,10 +343,12 @@ async function handleUpstreamMessage(
   }
 
   if (message.messageType === MessageType.SERVER_ERROR_RESPONSE) {
+    const mappedMessage = mapUpstreamErrorMessage(message.code, message.payload);
     sendToClient(session, {
       type: "server.error",
       error: "upstream_server_error",
       code: message.code ?? 0,
+      message: mappedMessage,
       payload: message.payload
     });
     await store.appendEvent(session.id, "error", {
@@ -419,6 +439,14 @@ function extractText(payload: unknown): string | null {
 }
 
 function inferTextRole(event: number, payload: unknown): "user" | "assistant" | "system" {
+  if (event === 550 || event === 559 || event === 350 || event === 351 || event === 352 || event === 359) {
+    return "assistant";
+  }
+
+  if (event === 451 || event === 459) {
+    return "user";
+  }
+
   if (event >= 450) {
     return "system";
   }
@@ -437,6 +465,46 @@ function inferTextRole(event: number, payload: unknown): "user" | "assistant" | 
   }
 
   return "assistant";
+}
+
+function mapUpstreamErrorMessage(code: number | undefined, payload: unknown): string {
+  const errorText = extractUpstreamErrorText(payload);
+  if (errorText.includes("session number limit exceeded")) {
+    return "上游会话数已达上限，请稍后重试或先关闭其它在线会话。";
+  }
+
+  if (errorText.includes("DialogAudioIdleTimeoutError")) {
+    return "会话空闲超时，按住继续说话。";
+  }
+
+  if (errorText.includes("AudioASRIdleTimeoutError")) {
+    return "会话空闲超时，按住继续说话。";
+  }
+
+  if (code !== undefined && code > 0) {
+    return `上游语音服务错误（code: ${code}）`;
+  }
+
+  return "上游语音服务错误";
+}
+
+function extractUpstreamErrorText(payload: unknown): string {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const record = payload as Record<string, unknown>;
+  const direct = record.error;
+  if (typeof direct === "string") {
+    return direct;
+  }
+
+  const message = record.message;
+  if (typeof message === "string") {
+    return message;
+  }
+
+  return "";
 }
 
 function rawDataToString(rawData: RawData): string {

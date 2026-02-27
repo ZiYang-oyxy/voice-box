@@ -41,6 +41,7 @@ const schema = z.object({
   DOUBAO_INPUT_MOD: z.enum(["audio", "text", "audio_file"]).default("audio"),
   DOUBAO_INPUT_SAMPLE_RATE: z.coerce.number().int().min(8000).max(48000).default(16000),
   DOUBAO_OUTPUT_SAMPLE_RATE: z.coerce.number().int().min(8000).max(48000).default(24000),
+  DOUBAO_OUTPUT_AUDIO_FORMAT: z.enum(["pcm", "pcm_s16le"]).default("pcm"),
   HOST: z.string().default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65535).default(8787),
   SAVE_HISTORY: z
@@ -73,6 +74,7 @@ export type AppConfig = {
   doubaoInputMod: "audio" | "text" | "audio_file";
   doubaoInputSampleRate: number;
   doubaoOutputSampleRate: number;
+  doubaoOutputAudioFormat: "pcm" | "pcm_s16le";
   host: string;
   port: number;
   saveHistory: boolean;
@@ -102,6 +104,7 @@ export function loadConfig(): AppConfig {
     doubaoInputMod: parsed.data.DOUBAO_INPUT_MOD,
     doubaoInputSampleRate: parsed.data.DOUBAO_INPUT_SAMPLE_RATE,
     doubaoOutputSampleRate: parsed.data.DOUBAO_OUTPUT_SAMPLE_RATE,
+    doubaoOutputAudioFormat: parsed.data.DOUBAO_OUTPUT_AUDIO_FORMAT,
     host: parsed.data.HOST,
     port: parsed.data.PORT,
     saveHistory: parsed.data.SAVE_HISTORY

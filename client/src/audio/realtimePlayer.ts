@@ -1,4 +1,5 @@
 const DEFAULT_OUTPUT_SAMPLE_RATE = 24000;
+export type RealtimeAudioFormat = "pcm" | "pcm_s16le";
 
 export class RealtimeAudioPlayer {
   private context: AudioContext | null = null;
@@ -9,14 +10,14 @@ export class RealtimeAudioPlayer {
     this.outputSampleRate = outputSampleRate;
   }
 
-  public async playBase64Pcm(base64Pcm: string): Promise<void> {
+  public async playBase64Pcm(base64Pcm: string, format: RealtimeAudioFormat = "pcm"): Promise<void> {
     if (!base64Pcm) {
       return;
     }
 
     const context = await this.ensureContext();
     const pcmBytes = decodeBase64(base64Pcm);
-    const floatData = int16BytesToFloat32(pcmBytes);
+    const floatData = pcmBytesToFloat32(pcmBytes, format);
 
     const audioBuffer = context.createBuffer(1, floatData.length, this.outputSampleRate);
     audioBuffer.getChannelData(0).set(floatData);
@@ -78,4 +79,28 @@ function int16BytesToFloat32(pcmBytes: Uint8Array): Float32Array {
   }
 
   return output;
+}
+
+function float32BytesToFloat32(pcmBytes: Uint8Array): Float32Array {
+  const sampleCount = Math.floor(pcmBytes.byteLength / 4);
+  const output = new Float32Array(sampleCount);
+  const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    const value = view.getFloat32(i * 4, true);
+    output[i] = Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
+  }
+
+  return output;
+}
+
+function pcmBytesToFloat32(
+  pcmBytes: Uint8Array,
+  format: RealtimeAudioFormat
+): Float32Array {
+  if (format === "pcm_s16le") {
+    return int16BytesToFloat32(pcmBytes);
+  }
+
+  return float32BytesToFloat32(pcmBytes);
 }

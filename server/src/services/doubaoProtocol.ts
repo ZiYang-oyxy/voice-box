@@ -32,7 +32,7 @@ export const enum MessageCompression {
 }
 
 type CreateFrameInput = {
-  event: number;
+  event?: number;
   sessionId?: string;
   payload?: unknown;
   messageType?: MessageType;
@@ -73,7 +73,8 @@ export function createDoubaoFrame({
     compression
   });
 
-  const eventBuffer = allocUint32(event);
+  const includeEvent = (messageTypeSpecificFlags & MessageTypeSpecificFlags.MSG_WITH_EVENT) > 0;
+  const eventBuffer = includeEvent ? allocUint32(event ?? 0) : Buffer.alloc(0);
   const payloadBytes = encodePayload(payload, serialization, compression);
   const payloadLengthBuffer = allocUint32(payloadBytes.length);
 

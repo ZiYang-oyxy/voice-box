@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { RealtimeAudioPlayer } from "../audio/realtimePlayer";
+import type { RealtimeAudioFormat } from "../audio/realtimePlayer";
 import { RealtimeRecorder } from "../audio/realtimeRecorder";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8787";
@@ -25,7 +26,7 @@ export type UseRealtimeVoiceResult = {
 };
 
 type ServerMessage =
-  | { type: "server.ready"; sessionId: string }
+  | { type: "server.ready"; sessionId: string; outputAudioFormat?: RealtimeAudioFormat }
   | { type: "server.tts.audio"; audio: string; event?: number | null }
   | { type: "server.text"; role: "user" | "assistant" | "system"; text: string }
   | { type: "server.event"; event: number | null; payload?: unknown }
@@ -44,6 +45,8 @@ export function useRealtimeVoice(): UseRealtimeVoiceResult {
   const sessionIdRef = useRef<string | null>(null);
   const wsPathRef = useRef<string | null>(null);
   const pressingRef = useRef(false);
+  const outputAudioFormatRef = useRef<RealtimeAudioFormat>("pcm");
+  const hasAudioInCurrentPressRef = useRef(false);
   const stateRef = useRef<VoiceState>("idle");
   const resettingRef = useRef(false);
 
@@ -97,13 +100,16 @@ export function useRealtimeVoice(): UseRealtimeVoiceResult {
     async (message: ServerMessage) => {
       switch (message.type) {
         case "server.ready":
+          if (message.outputAudioFormat) {
+            outputAudioFormatRef.current = message.outputAudioFormat;
+          }
           if (stateRef.current === "connecting") {
             setState("idle");
           }
           return;
         case "server.tts.audio":
           setState("responding");
-          await playerRef.current?.playBase64Pcm(message.audio);
+          await playerRef.current?.playBase64Pcm(message.audio, outputAudioFormatRef.current);
           return;
         case "server.text":
           appendTranscript(message.role, message.text);
@@ -116,15 +122,14 @@ export function useRealtimeVoice(): UseRealtimeVoiceResult {
           if (message.event === 359 && !pressingRef.current) {
             setState("idle");
           }
-
-          {
-            const text = extractTextFromPayload(message.payload);
-            if (text) {
-              appendTranscript(inferRoleFromEvent(message.event), text);
-            }
-          }
           return;
         case "server.error":
+          if (isIdleTimeoutMessage(message.message ?? message.error)) {
+            setState("idle");
+            setError(null);
+            appendTranscript("system", "会话空闲超时，按住继续说话。");
+            return;
+          }
           setState("error");
           setError(message.message ?? message.error);
           appendTranscript("system", `错误: ${message.message ?? message.error}`);
@@ -211,16 +216,6 @@ export function useRealtimeVoice(): UseRealtimeVoiceResult {
   const interrupt = useCallback(async () => {
     sendToWs({ type: "client.interrupt" });
 
-    if (sessionIdRef.current) {
-      void fetch(`${API_BASE}/api/realtime/interrupt`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({ sessionId: sessionIdRef.current })
-      }).catch(() => undefined);
-    }
-
     await playerRef.current?.stop();
     appendTranscript("system", "已打断当前播报");
   }, [appendTranscript, sendToWs]);
@@ -230,6 +225,7 @@ export function useRealtimeVoice(): UseRealtimeVoiceResult {
       return;
     }
     pressingRef.current = true;
+    hasAudioInCurrentPressRef.current = false;
 
     try {
       setError(null);
@@ -240,6 +236,9 @@ export function useRealtimeVoice(): UseRealtimeVoiceResult {
       }
 
       await recorderRef.current?.start((chunk) => {
+        if (chunk.byteLength > 0) {
+          hasAudioInCurrentPressRef.current = true;
+        }
         sendToWs({
           type: "client.audio.append",
           audio: toBase64(chunk)
@@ -266,13 +265,22 @@ export function useRealtimeVoice(): UseRealtimeVoiceResult {
 
     try {
       await recorderRef.current?.stop();
+
+      if (!hasAudioInCurrentPressRef.current) {
+        const message = "未检测到语音输入，请按住按钮说话后再松开。";
+        setState("idle");
+        setError(message);
+        appendTranscript("system", `错误: ${message}`);
+        return;
+      }
+
       sendToWs({ type: "client.audio.commit" });
       setState("responding");
     } catch (cause) {
       setState("error");
       setError(toErrorMessage(cause, "结束录音失败"));
     }
-  }, [sendToWs]);
+  }, [appendTranscript, sendToWs]);
 
   const resetSession = useCallback(async () => {
     resettingRef.current = true;
@@ -344,34 +352,8 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function extractTextFromPayload(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-
-  const candidate = payload as Record<string, unknown>;
-  const keys = ["content", "text", "sentence", "result", "answer", "output_text", "display_text"];
-
-  for (const key of keys) {
-    const value = candidate[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  }
-
-  return null;
-}
-
-function inferRoleFromEvent(event: number | null): "user" | "assistant" | "system" {
-  if (event === null) {
-    return "system";
-  }
-
-  if (event >= 450) {
-    return "system";
-  }
-
-  return "assistant";
+function isIdleTimeoutMessage(message: string): boolean {
+  return message.includes("会话空闲超时") || message.includes("DialogAudioIdleTimeoutError");
 }
 
 function toErrorMessage(cause: unknown, fallback: string): string {

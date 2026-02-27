@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 
 import WebSocket, { type RawData } from "ws";
 
@@ -7,6 +8,7 @@ import {
   MessageCompression,
   MessageSerialization,
   MessageType,
+  MessageTypeSpecificFlags,
   parseDoubaoMessage,
   type ParsedDoubaoMessage
 } from "./doubaoProtocol.js";
@@ -68,7 +70,9 @@ export class DoubaoRealtimeClient extends EventEmitter {
     this.bindSocketListeners(this.ws);
 
     await this.sendStartConnection();
+    await this.waitForEvent(50);
     await this.startSession();
+    await this.waitForEvent(150);
   }
 
   public async sendAudioChunk(audio: Buffer): Promise<void> {
@@ -82,6 +86,20 @@ export class DoubaoRealtimeClient extends EventEmitter {
         sessionId: this.session.sessionId,
         payload: audio,
         messageType: MessageType.CLIENT_AUDIO_ONLY_REQUEST,
+        serialization: MessageSerialization.NO_SERIALIZATION,
+        compression: MessageCompression.GZIP
+      })
+    );
+  }
+
+  public async sendAudioCommit(): Promise<void> {
+    await this.sendFrame(
+      createDoubaoFrame({
+        sessionId: this.session.sessionId,
+        payload: Buffer.alloc(320),
+        messageType: MessageType.CLIENT_AUDIO_ONLY_REQUEST,
+        // For audio-only request, 0b0010 is "tail packet".
+        messageTypeSpecificFlags: MessageTypeSpecificFlags.NEG_SEQUENCE,
         serialization: MessageSerialization.NO_SERIALIZATION,
         compression: MessageCompression.GZIP
       })
@@ -118,6 +136,7 @@ export class DoubaoRealtimeClient extends EventEmitter {
     );
 
     await this.startSession();
+    await this.waitForEvent(150);
   }
 
   public async close(): Promise<void> {
@@ -177,7 +196,7 @@ export class DoubaoRealtimeClient extends EventEmitter {
         speaker: this.session.speaker ?? config.doubaoSpeaker,
         audio_config: {
           channel: 1,
-          format: "pcm",
+          format: config.doubaoOutputAudioFormat,
           sample_rate: config.doubaoOutputSampleRate
         }
       },
@@ -213,6 +232,10 @@ export class DoubaoRealtimeClient extends EventEmitter {
 
   private async sendFrame(frame: Buffer): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      await this.connect();
+    }
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("doubao_ws_not_open");
     }
 
@@ -233,7 +256,8 @@ export class DoubaoRealtimeClient extends EventEmitter {
         "X-Api-App-ID": config.doubaoAppId,
         "X-Api-Access-Key": config.doubaoAccessKey,
         "X-Api-Resource-Id": config.doubaoResourceId,
-        "X-Api-App-Key": config.doubaoAppKey
+        "X-Api-App-Key": config.doubaoAppKey,
+        "X-Api-Connect-Id": randomUUID()
       },
       perMessageDeflate: false
     });
@@ -244,6 +268,27 @@ export class DoubaoRealtimeClient extends EventEmitter {
     });
 
     return socket;
+  }
+
+  private async waitForEvent(event: number, timeoutMs = 8000): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.off("message", onMessage);
+        reject(new Error(`doubao_wait_event_timeout_${event}`));
+      }, timeoutMs);
+
+      const onMessage = (message: ParsedDoubaoMessage) => {
+        if (message.event !== event) {
+          return;
+        }
+
+        clearTimeout(timer);
+        this.off("message", onMessage);
+        resolve();
+      };
+
+      this.on("message", onMessage);
+    });
   }
 
   private bindSocketListeners(socket: WebSocket): void {
