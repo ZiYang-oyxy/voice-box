@@ -145,12 +145,11 @@ body::before {
   animation: pulse 1s ease-out infinite;
 }
 
-.status-dot[data-state="uploading"],
-.status-dot[data-state="thinking"] {
+.status-dot[data-state="connecting"] {
   background: #b27a08;
 }
 
-.status-dot[data-state="speaking"] {
+.status-dot[data-state="responding"] {
   background: var(--signal-hot);
 }
 

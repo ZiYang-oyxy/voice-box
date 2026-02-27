@@ -1,4 +1,4 @@
-import type { VoiceState } from "../hooks/useVoiceTurn";
+import type { VoiceState } from "../hooks/useRealtimeVoice";
 
 type ConnectionStatusProps = {
   state: VoiceState;
@@ -8,10 +8,9 @@ type ConnectionStatusProps = {
 
 const stateLabelMap: Record<VoiceState, string> = {
   idle: "待命",
+  connecting: "连接中",
   recording: "录音中",
-  uploading: "上传音频",
-  thinking: "思考中",
-  speaking: "播报中",
+  responding: "播报中",
   error: "异常"
 };
 
@@ -24,7 +23,7 @@ export function ConnectionStatus({ state, sessionId, error }: ConnectionStatusPr
       </div>
       <div className="status-meta">Session: {sessionId ?? "(new)"}</div>
       <div className="status-meta status-tip">
-        {state === "speaking" ? "正在播放，按住可立即打断" : "按住讲话，松开发送"}
+        {state === "responding" ? "正在播放，按住可立即打断" : "按住讲话，松开提交语音"}
       </div>
       {error ? <p className="status-error">{error}</p> : null}
     </section>

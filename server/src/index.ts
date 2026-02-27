@@ -3,10 +3,12 @@ import { fileURLToPath } from "node:url";
 
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
+import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 
 import { healthRoutes } from "./routes/health.js";
 import { historyRoutes } from "./routes/history.js";
+import { realtimeRoutes } from "./routes/realtime.js";
 import { voiceRoutes } from "./routes/voice.js";
 import { SessionStore } from "./services/historyStore.js";
 import { config } from "./services/openaiClient.js";
@@ -26,6 +28,7 @@ await app.register(multipart, {
     fields: 5
   }
 });
+await app.register(websocket);
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const historyDir = path.resolve(currentDir, "../../data/sessions");
@@ -34,6 +37,7 @@ const sessionStore = new SessionStore(historyDir, config.saveHistory);
 await app.register(healthRoutes);
 await app.register(historyRoutes, { store: sessionStore });
 await app.register(voiceRoutes, { store: sessionStore });
+await app.register(realtimeRoutes, { store: sessionStore });
 
 app.setErrorHandler((error, _request, reply) => {
   reply.code(500).send({

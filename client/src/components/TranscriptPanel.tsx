@@ -1,7 +1,7 @@
-import type { TurnRecord } from "../hooks/useVoiceTurn";
+import type { TranscriptItem } from "../hooks/useRealtimeVoice";
 
 type TranscriptPanelProps = {
-  turns: TurnRecord[];
+  turns: TranscriptItem[];
 };
 
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -26,10 +26,7 @@ export function TranscriptPanel({ turns }: TranscriptPanelProps): JSX.Element {
             <li className="turn-card" key={turn.id}>
               <div className="turn-time">{timeFormatter.format(new Date(turn.createdAt))}</div>
               <p>
-                <strong>You:</strong> {turn.userText}
-              </p>
-              <p>
-                <strong>AI:</strong> {turn.assistantText}
+                <strong>{labelForRole(turn.role)}:</strong> {turn.text}
               </p>
             </li>
           ))}
@@ -37,4 +34,14 @@ export function TranscriptPanel({ turns }: TranscriptPanelProps): JSX.Element {
       )}
     </section>
   );
+}
+
+function labelForRole(role: TranscriptItem["role"]): string {
+  if (role === "user") {
+    return "You";
+  }
+  if (role === "assistant") {
+    return "AI";
+  }
+  return "System";
 }

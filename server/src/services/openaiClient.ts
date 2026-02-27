@@ -14,6 +14,6 @@ dotenv.config();
 export const config = loadConfig();
 
 export const openai = new OpenAI({
-  apiKey: config.openaiApiKey,
+  apiKey: config.openaiApiKey || "missing-openai-api-key",
   baseURL: config.openaiBaseUrl
 });
