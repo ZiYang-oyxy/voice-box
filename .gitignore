@@ -3,7 +3,6 @@ node_modules
 .DS_Store
 __pycache__/
 *.pyc
-realtime_dialog_demo/
 *.tsbuildinfo
 client/dist
 server/dist
