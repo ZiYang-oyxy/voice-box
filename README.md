@@ -1,80 +1,79 @@
 # voice-box_cx
 
-本项目是一个本地运行的「按住说话」语音助手 Web 应用：
+本项目是一个本地运行的实时语音助手 Web 应用，默认走「豆包 Realtime API」实现按住说话、松开提交、边收边播的全双工体验。
 
-- 前端（React + Vite）负责录音、状态展示、音频播放与打断交互
-- 后端（Fastify + OpenAI SDK）负责 STT、LLM、TTS 与会话历史
-- OpenAI API Key 只保存在服务端，浏览器不直接持有密钥
-
-核心链路：`浏览器录音 -> STT -> LLM -> TTS 音频流回放`
+- 前端（React + Vite）负责录音、播放、状态管理与打断交互
+- 后端（Fastify + WebSocket）负责会话网关、协议转发与历史落盘
+- 服务端通过 Doubao Realtime WebSocket 与上游建立长连接
 
 ## 功能概览
 
 - 按住录音，松开发送（支持鼠标、触屏、空格/回车）
-- 正在播报时再次按住可立即打断当前轮次
+- 播报中再次按住可立即打断并开始新输入
 - 自动管理 `sessionId`，支持连续多轮上下文
 - 服务端可选落盘历史（`data/sessions/*.jsonl` + `*.meta.json`）
-- 返回转写与回复摘要（通过响应头），前端即时显示对话记录
+- 实时回传文本事件与音频分片，前端即时展示 transcript
 
 ## 技术架构
 
 ```mermaid
 flowchart LR
-  U[User] --> B[Browser Client<br/>React + Vite]
-  B -->|multipart/form-data audio| S[Fastify Server]
-  S -->|audio.transcriptions.create| O1[OpenAI STT]
-  S -->|responses.create| O2[OpenAI LLM]
-  S -->|audio.speech.create| O3[OpenAI TTS]
-  O3 -->|audio/mpeg stream| S
-  S -->|stream + x-session-id/x-user-text/x-assistant-text| B
-  S <--> H[(data/sessions<br/>jsonl + meta)]
+  U[User] --> C[Client React]
+  C -->|POST /api/realtime/session| S[Fastify Gateway]
+  C <-->|WS /api/realtime/ws| S
+  S <-->|WS Doubao Realtime| D[Doubao Realtime API]
+  S <--> H[(data/sessions jsonl + meta)]
 ```
 
-## 请求时序（单轮对话）
+## 实时请求时序
 
 ```mermaid
 sequenceDiagram
   participant U as User
   participant C as Client
   participant S as Server
-  participant O as OpenAI
+  participant D as Doubao
 
-  U->>C: 按住按钮开始录音
-  U->>C: 松开按钮结束录音
-  C->>S: POST /api/voice/turn (audio, sessionId?)
-  S->>O: STT 转写
-  O-->>S: userText
-  S->>O: LLM 生成 assistantText
-  O-->>S: assistantText
-  S->>O: TTS 生成 MP3 流
-  O-->>S: audio stream
-  S-->>C: 音频流 + 会话头信息
-  C-->>U: 播放语音并显示文本记录
+  U->>C: 按下开始说话
+  C->>S: POST /api/realtime/session
+  S-->>C: sessionId + wsPath
+  C->>S: WebSocket 连接 /api/realtime/ws
+  S->>D: connect + event 1/100 (start connection/session)
+  C->>S: client.audio.append (base64 PCM)
+  S->>D: event 200 (audio chunk)
+  U->>C: 松开结束录音
+  C->>S: client.audio.commit
+  D-->>S: ACK/事件 + 音频分片
+  S-->>C: server.event / server.tts.audio / server.text
+  C-->>U: 播放音频并刷新文本
 ```
 
 ## 项目结构
 
 ```text
 .
-├── client/                 # React 前端
+├── client/
 │   └── src/
-│       ├── hooks/useVoiceTurn.ts     # 录音/上传/播放/打断状态机
-│       ├── audio/                     # 录音器与流式播放器
-│       ├── components/                # UI 组件
-│       └── styles/theme.css
-├── server/                 # Fastify 服务
+│       ├── hooks/useRealtimeVoice.ts      # 实时语音状态机
+│       ├── audio/realtimeRecorder.ts       # 录音与 16k PCM 下采样
+│       ├── audio/realtimePlayer.ts         # 24k PCM 播放队列
+│       └── components/                     # UI 组件
+├── server/
 │   └── src/
-│       ├── routes/                    # health/history/voice API
-│       └── services/                  # env/openai/stt/llm/tts/historyStore
+│       ├── routes/realtime.ts              # 实时会话 API + WS 网关
+│       ├── services/doubaoRealtimeClient.ts# 上游 Doubao 客户端
+│       ├── services/doubaoProtocol.ts      # 协议帧编解码
+│       ├── routes/voice.ts                 # 旧版 OpenAI 单轮接口
+│       └── services/historyStore.ts        # 会话历史存储
 ├── .env.example
-└── package.json            # workspace 根脚本
+└── package.json
 ```
 
 ## 运行要求
 
 - Node.js `>= 20`
 - 可用麦克风与扬声器（浏览器需授予权限）
-- OpenAI API Key（需可访问 STT / Responses / TTS）
+- 豆包 Realtime 凭证（`DOUBAO_APP_ID`、`DOUBAO_ACCESS_KEY`）
 
 ## 快速开始
 
@@ -90,13 +89,14 @@ npm install
 cp .env.example .env
 ```
 
-至少设置：
+至少填写：
 
 ```bash
-OPENAI_API_KEY=sk-xxxx
+DOUBAO_APP_ID=your_app_id
+DOUBAO_ACCESS_KEY=your_access_key
 ```
 
-3. 启动开发环境（前后端同时启动）
+3. 启动开发环境
 
 ```bash
 npm run dev
@@ -113,32 +113,29 @@ npm run dev
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | 无 | 必填，OpenAI API Key |
-| `OPENAI_BASE_URL` | 空 | 可选，自定义兼容网关地址（如 `https://xxx/v1`） |
-| `OPENAI_STT_MODEL` | `gpt-4o-mini-transcribe` | STT 模型 |
-| `OPENAI_LLM_MODEL` | `gpt-4.1-mini` | 文本生成模型 |
-| `OPENAI_TTS_MODEL` | `gpt-4o-mini-tts` | TTS 模型 |
-| `DEFAULT_VOICE` | `marin` | 默认音色 |
+| `DOUBAO_REALTIME_BASE_URL` | `wss://openspeech.bytedance.com/api/v3/realtime/dialogue` | Doubao Realtime 地址 |
+| `DOUBAO_APP_ID` | 无 | 必填，应用 ID |
+| `DOUBAO_ACCESS_KEY` | 无 | 必填，访问密钥 |
+| `DOUBAO_RESOURCE_ID` | `volc.speech.dialog` | 资源 ID |
+| `DOUBAO_APP_KEY` | `PlgvMymc7f3tQnJ6` | App Key |
+| `DOUBAO_BOT_NAME` | `豆包` | 对话角色名 |
+| `DOUBAO_SPEAKER` | `zh_male_yunzhou_jupiter_bigtts` | 默认发音人 |
+| `DOUBAO_RECV_TIMEOUT` | `10` | 上游接收超时（10~120） |
+| `DOUBAO_INPUT_MOD` | `audio` | 输入模式：`audio/text/audio_file` |
+| `DOUBAO_INPUT_SAMPLE_RATE` | `16000` | 输入采样率（当前前端固定 16k） |
+| `DOUBAO_OUTPUT_SAMPLE_RATE` | `24000` | 输出采样率 |
 | `HOST` | `127.0.0.1` | 服务监听地址 |
 | `PORT` | `8787` | 服务端口 |
-| `SAVE_HISTORY` | `true` | 是否保存会话历史（`false` 则不落盘） |
+| `SAVE_HISTORY` | `true` | 是否保存会话历史 |
 
-前端可选环境变量：
+兼容保留（旧版 `/api/voice/*` 使用）：
 
-- `VITE_API_BASE_URL`：默认 `http://127.0.0.1:8787`
-
-## 常用脚本
-
-根目录：
-
-- `npm run dev`：并行启动 client/server 开发服务
-- `npm run build`：构建 client/server
-- `npm run typecheck`：双端 TypeScript 类型检查
-
-子项目：
-
-- `npm run dev --workspace server`
-- `npm run dev --workspace client`
+- `OPENAI_API_KEY`
+- `OPENAI_BASE_URL`
+- `OPENAI_STT_MODEL`
+- `OPENAI_LLM_MODEL`
+- `OPENAI_TTS_MODEL`
+- `DEFAULT_VOICE`
 
 ## API 说明
 
@@ -146,71 +143,81 @@ npm run dev
 
 健康检查。
 
-示例响应：
+### `POST /api/realtime/session`
+
+创建实时会话。
+
+请求体（可选）：
 
 ```json
 {
-  "ok": true,
-  "now": "2026-02-27T00:00:00.000Z"
+  "speaker": "zh_male_yunzhou_jupiter_bigtts",
+  "botName": "豆包",
+  "recvTimeout": 10,
+  "inputMod": "audio"
 }
 ```
 
-### `POST /api/voice/turn`
+响应：
 
-处理一轮语音对话。
+```json
+{
+  "sessionId": "uuid",
+  "wsPath": "/api/realtime/ws?sessionId=uuid",
+  "expiresAt": "2026-02-27T00:00:00.000Z"
+}
+```
 
-- Content-Type: `multipart/form-data`
-- 必填字段：`audio`（文件）
-- 可选字段：`sessionId`、`voice`、`languageHint`（`auto | zh | en`）
+### `GET /api/realtime/ws?sessionId=...`（WebSocket）
 
-返回：
+客户端消息：
 
-- Body：`audio/mpeg` 音频流
-- Headers：
-  - `x-session-id`
-  - `x-user-text`（URL 编码，最多 500 字符）
-  - `x-assistant-text`（URL 编码，最多 2000 字符）
+- `client.start`
+- `client.audio.append`（`audio`: base64 PCM）
+- `client.audio.commit`
+- `client.chat.text`
+- `client.interrupt`
+- `client.stop`
 
-### `POST /api/voice/interrupt`
+服务端消息：
 
-主动打断服务端正在处理/播报中的轮次。
+- `server.ready`
+- `server.tts.audio`（`audio`: base64 PCM）
+- `server.text`
+- `server.event`
+- `server.error`
+- `server.closed`
+
+### `POST /api/realtime/interrupt`
+
+主动中断某个实时会话。
 
 请求体：
 
 ```json
-{ "sessionId": "xxx" }
+{ "sessionId": "uuid" }
 ```
 
-### `GET /api/history`
+### 历史查询
 
-列出会话元信息（最近更新在前）。
+- `GET /api/history`
+- `GET /api/history/:sessionId`
 
-### `GET /api/history/:sessionId`
+### 兼容接口（旧版单轮）
 
-查询会话事件流（jsonl 解析结果）。
+- `POST /api/voice/turn`
+- `POST /api/voice/interrupt`
 
 ## 会话与历史机制
 
-- `sessionId` 首轮可不传，由服务端生成并通过 `x-session-id` 返回
-- 后续前端自动携带同一 `sessionId`，服务端读取历史 `turn_completed` 作为上下文
-- 上下文窗口默认保留最近 12 轮（`historyStore.ts` 的 `DEFAULT_CONTEXT_TURNS`）
-- 若 `SAVE_HISTORY=false`：
-  - `/api/history` 返回空列表
-  - `/api/history/:sessionId` 会返回 `404 session_not_found`
-
-## 打断机制说明
-
-- 前端再次按住时会：
-  - 终止本地音频播放
-  - 调用 `/api/voice/interrupt`
-  - 进入新一轮录音
-- 服务端对每个 `sessionId` 维护 in-flight `AbortController`：
-  - 新请求到来会中止旧请求
-  - 手动调用 interrupt 也会中止当前轮次
+- 首轮通过 `/api/realtime/session` 获取 `sessionId`
+- 前端在一个会话内复用同一 `sessionId`
+- 服务端记录关键事件（连接、音频分片、上游事件、中断、关闭）
+- `SAVE_HISTORY=false` 时不落盘历史
 
 ## 排障建议
 
-- 启动即报 `OPENAI_API_KEY is required`：检查根目录 `.env`
-- 浏览器无法录音：确认麦克风权限和 HTTPS/localhost 策略
-- 播放失败或无声音：检查浏览器自动播放限制与系统输出设备
-- API 报错 `voice_turn_failed`：查看 server 控制台日志（Fastify logger 已开启）
+- 启动即报 `DOUBAO_APP_ID is required` 或 `DOUBAO_ACCESS_KEY is required`：检查 `.env`
+- WebSocket 连接失败：检查企业网络策略、代理和防火墙
+- 有文本无声音：确认浏览器自动播放策略与系统输出设备
+- 频繁中断或超时：检查 `DOUBAO_RECV_TIMEOUT` 与网络抖动
